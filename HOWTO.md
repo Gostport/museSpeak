@@ -52,7 +52,7 @@ You're opening a stale or wrong link. Always install from the link in this file 
 1. Click anywhere in the page once, then send another test message (Chrome's sound policy).
 2. Check the tab isn't muted (right-click the tab → "Unmute site") and your system volume is up.
 3. Send a test that produces a *longer* reply — very short replies that render instantly are the hardest case for v0.1.
-4. Open the browser console (F12 → **Console**) and look for lines starting with `[Ibid Reader]`. "armed" means it's watching; "speaking:" lines mean it tried to read something. Those lines are the best thing to report when asking for a fix.
+4. Open the browser console (F12 → **Console**) and look for lines starting with `[museSpeak]`. "armed" means it's watching; "speaking:" lines mean it tried to read something. Those lines are the best thing to report when asking for a fix.
 
 ### It read one of my own messages
 
