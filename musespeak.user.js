@@ -1,20 +1,30 @@
 // ==UserScript==
 // @name museSpeak — Muse auto-speak
 // @namespace kipkennedy.musespeak
-// @version 0.3
+// @version 0.4
 // @description Speaks new Muse (Ibid) replies aloud automatically in the Muse web chat.
 // @author Kip Kennedy / Ibid
 // @match *://muse.ai/*
 // @run-at document-idle
 // @grant none
+// @noframes
 // @downloadURL https://raw.githubusercontent.com/Gostport/museSpeak/main/musespeak.user.js
 // @updateURL https://raw.githubusercontent.com/Gostport/museSpeak/main/musespeak.user.js
 // ==/UserScript==
 
 /*
-  museSpeak v0.3 — Tampermonkey userscript
+  museSpeak v0.4 — Tampermonkey userscript
   ----------------------------------------
   Changelog:
+    v0.4 (2026-10-11): Missing-toggle fix.
+      Console diagnosis: v0.3 armed fine (log lines present, no
+      museSpeak errors), but it also injected into muse.ai's hidden
+      marketing iframes (the @match covered every frame), and the
+      app can discard the injected toggle when it re-renders. Now:
+        - @noframes + top-frame guard: runs only in the main page.
+        - The toggle is self-healing: it checks every 2s and
+          re-attaches itself if the page threw it away.
+    v0.3 (2026-10-11): Performance + own-message fixes.
     v0.3 (2026-10-11): Performance + own-message fixes.
       - v0.2 re-scanned and cloned blocks across the whole page after
         nearly every typing pause — on a long chat that janked the
@@ -54,7 +64,9 @@
 (() => {
   'use strict';
 
-  const VERSION = '0.3';
+  if (window.top !== window.self) return; // top frame only (see @noframes)
+
+  const VERSION = '0.4';
   const CFG = {
     armDelayMs: 2500,   // wait after load before speaking anything
     scanDebounceMs: 1200,
@@ -283,7 +295,16 @@
     if (!muted) pump();
   });
   ui.appendChild(btn);
-  (document.body || document.documentElement).appendChild(ui);
+
+  // Self-healing: if the app re-renders and discards the toggle,
+  // re-attach the same element (its ON/OFF state survives).
+  function ensureUI() {
+    if (!ui.isConnected) {
+      (document.body || document.documentElement).appendChild(ui);
+    }
+  }
+  ensureUI();
+  setInterval(ensureUI, 2000);
 
   // ---------- go ----------
   const obs = new MutationObserver((muts) => {
