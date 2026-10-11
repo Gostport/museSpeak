@@ -2,6 +2,13 @@
 
 All notable changes to museSpeak. Versions follow the project's standing rule: small fixes and refinements bump the minor number (0.1 → 0.2), redesigns bump the major (1.0, 2.0).
 
+## [0.3] — 2026-10-11
+
+Performance and own-message fixes after live testing on a very long chat.
+
+- Typing no longer triggers scans: mutations inside the composer or page chrome are ignored, and scans examine only the newest ~60 blocks instead of the whole page. v0.2's full-page re-scans after every typing pause caused the typing lag (and likely stressed the tab).
+- Own-message filter now captures the composer Kip actually has focused (v0.2 took the longest text box on the page, which could be the wrong one) and matches fuzzily — letters/digits only, containment either way — so his sent messages are reliably recognized and never read back.
+
 ## [0.2] — 2026-10-11
 
 Detection rewritten after the first live test: v0.1 spoke stray page labels and missed a real reply.
