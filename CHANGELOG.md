@@ -2,6 +2,16 @@
 
 All notable changes to museSpeak. Versions follow the project's standing rule: small fixes and refinements bump the minor number (0.1 → 0.2), redesigns bump the major (1.0, 2.0).
 
+## [0.2] — 2026-10-11
+
+Detection rewritten after the first live test: v0.1 spoke stray page labels and missed a real reply.
+
+- Per-block diffing replaces the whole-page text diff. The page text jitters (labels, timestamps), which made v0.1's resync guard silently swallow real replies while tiny chrome text leaked through and got spoken.
+- Watches innermost message-sized text blocks (25–4000 chars); code elements are stripped from a block before it is read.
+- Header, nav, sidebar, and composer areas are excluded — page labels can never be spoken.
+- A block must exist after arming and sit unchanged ~1.5s before it is read; already-accounted texts are never re-read, and growth speaks only the new tail.
+- Own-message filter also captures the composer text on any button click, covering send-button sends.
+
 ## [0.1] — 2026-10-10
 
 Initial release.
