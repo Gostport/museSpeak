@@ -2,6 +2,14 @@
 
 All notable changes to museSpeak. Versions follow the project's standing rule: small fixes and refinements bump the minor number (0.1 → 0.2), redesigns bump the major (1.0, 2.0).
 
+## [0.4] — 2026-10-11
+
+Missing-toggle fix, from a console diagnosis.
+
+- The v0.3 script was arming correctly (its log lines were present and there were no museSpeak errors), but it also injected into muse.ai's hidden marketing iframes, and the app could discard the injected toggle on re-render.
+- Added `@noframes` plus a top-frame guard — museSpeak now runs only in the main page.
+- The toggle button is self-healing: it checks every 2 seconds and re-attaches itself if the page threw it away.
+
 ## [0.3] — 2026-10-11
 
 Performance and own-message fixes after live testing on a very long chat.
