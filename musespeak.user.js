@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name museSpeak — Muse auto-speak
 // @namespace kipkennedy.musespeak
-// @version 0.4
+// @version 0.5
 // @description Speaks new Muse (Ibid) replies aloud automatically in the Muse web chat.
 // @author Kip Kennedy / Ibid
 // @match *://muse.ai/*
@@ -13,9 +13,15 @@
 // ==/UserScript==
 
 /*
-  museSpeak v0.4 — Tampermonkey userscript
+  museSpeak v0.5 — Tampermonkey userscript
   ----------------------------------------
   Changelog:
+    v0.5 (2026-10-11): Voice-lock + faster settle.
+      The voice could swap mid-message (male -> female) because Chrome
+      loads its voice list late and the script re-picked a voice per
+      chunk. Now the voice list is awaited once (voiceschanged, 1.2s
+      timeout) and the chosen voice is locked for the whole session.
+      Also trimmed the scan settle/debounce delays slightly.
     v0.4 (2026-10-11): Missing-toggle fix.
       Console diagnosis: v0.3 armed fine (log lines present, no
       museSpeak errors), but it also injected into muse.ai's hidden
@@ -66,12 +72,12 @@
 
   if (window.top !== window.self) return; // top frame only (see @noframes)
 
-  const VERSION = '0.4';
+  const VERSION = '0.5';
   const CFG = {
     armDelayMs: 2500,   // wait after load before speaking anything
-    scanDebounceMs: 1200,
+    scanDebounceMs: 900,
     windowSize: 60,     // only the newest ~60 candidate blocks are scanned
-    settleMs: 1500,     // block must be unchanged this long before speaking
+    settleMs: 1000,     // block must be unchanged this long before speaking
     minAgeMs: 1200,     // block must exist at least this long before speaking
     minChars: 25,       // shorter blocks are labels, never speech
     maxChars: 4000,
@@ -153,13 +159,31 @@
   const queue = [];
   let speaking = false;
 
-  function pickVoice() {
+  // v0.5: one voice per session. Chrome loads its voice list
+  // asynchronously, so re-picking per chunk could swap voices
+  // mid-message. Await the list once (voiceschanged, 1.2s
+  // timeout) and lock the choice for the whole session.
+  let sessionVoice = undefined; // undefined = not yet resolved
+
+  function pickVoiceOnce() {
     const vs = speechSynthesis.getVoices().filter(v => /^en([-_]|$)/i.test(v.lang));
     for (const hint of CFG.voiceNameHints) {
       const hit = vs.find(v => v.name.includes(hint));
       if (hit) return hit;
     }
     return vs[0] || null;
+  }
+
+  function ensureVoiceReady(cb) {
+    if (sessionVoice !== undefined) { cb(); return; }
+    const done = () => { sessionVoice = pickVoiceOnce(); cb(); };
+    try {
+      if (speechSynthesis.getVoices().length) { done(); return; }
+      let settled = false;
+      const settle = () => { if (!settled) { settled = true; done(); } };
+      speechSynthesis.onvoiceschanged = settle;
+      setTimeout(settle, 1200);
+    } catch (e) { done(); }
   }
 
   function pump() {
@@ -169,8 +193,7 @@
     speaking = true;
     const u = new SpeechSynthesisUtterance(next);
     u.rate = CFG.rate;
-    const v = pickVoice();
-    if (v) u.voice = v;
+    if (sessionVoice) u.voice = sessionVoice; // locked per session (v0.5)
     u.onend = u.onerror = () => { speaking = false; pump(); };
     speechSynthesis.speak(u);
   }
@@ -179,8 +202,10 @@
     const chunks = splitSentences(text);
     if (!chunks.length) return;
     console.log('[museSpeak] speaking:', text.slice(0, 120) + (text.length > 120 ? '…' : ''));
-    chunks.forEach(c => queue.push(c));
-    pump();
+    ensureVoiceReady(() => {
+      chunks.forEach(c => queue.push(c));
+      pump();
+    });
   }
 
   function stopAll() {
