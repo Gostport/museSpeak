@@ -2,6 +2,13 @@
 
 All notable changes to museSpeak. Versions follow the project's standing rule: small fixes and refinements bump the minor number (0.1 → 0.2), redesigns bump the major (1.0, 2.0).
 
+## [0.5] — 2026-10-11
+
+Voice-lock + faster settle.
+
+- The voice could swap mid-message (male → female) because Chrome loads its voice list late and the script re-picked a voice per chunk. The voice list is now awaited once (voiceschanged, 1.2s timeout) and the chosen voice is locked for the whole session.
+- Trimmed the scan settle/debounce delays slightly (1500 → 1000 ms settle, 1200 → 900 ms debounce) so replies start speaking sooner.
+
 ## [0.4] — 2026-10-11
 
 Missing-toggle fix, from a console diagnosis.
