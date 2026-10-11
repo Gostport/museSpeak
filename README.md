@@ -36,4 +36,4 @@ museSpeak reads the text of the chat page it runs on and hands it to your browse
 
 ## Status
 
-v0.2 — working prototype. Detection is deliberately selector-free (it diffs individual message blocks instead of depending on Muse's markup), so it should survive page redesigns. See the CHANGELOG for what's planned next.
+v0.3 — working prototype. Detection is deliberately selector-free (it diffs individual message blocks instead of depending on Muse's markup), so it should survive page redesigns. See the CHANGELOG for what's planned next.
