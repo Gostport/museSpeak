@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name museSpeak — Muse auto-speak
 // @namespace kipkennedy.musespeak
-// @version 0.1
+// @version 0.2
 // @description Speaks new Muse (Ibid) replies aloud automatically in the Muse web chat.
 // @author Kip Kennedy / Ibid
 // @match *://muse.ai/*
@@ -12,62 +12,89 @@
 // ==/UserScript==
 
 /*
-museSpeak v0.1 — Tampermonkey prototype
+museSpeak v0.2 — Tampermonkey userscript
 ----------------------------------------
 Changelog:
-v0.1 (2026-10-10): First prototype.
-- Selector-free detection: snapshots the chat region's text and speaks
-only the NEW text that appears after things settle (~1.2s quiet).
-No dependency on Muse's page markup, so it survives redesigns
-better than class-based scraping.
-- Skips chat history present at page load (arms after a settle delay).
-- Filters out Kip's own sent messages (captures the composer text
-when Enter is pressed).
-- Markdown cleanup for speech: code blocks announced and skipped,
-links reduced to their text, URLs/widget tokens/citations dropped.
-- Sentence-chunked speech queue using Chrome's built-in voices
-(prefers "Google US English"). No API key, no cost.
-- On-page toggle button (bottom-right): ON/OFF, stops current speech.
-- Safety resync: if the page text changes too much at once (chat
-switch, big re-render), it silently re-baselines instead of
-reading a wall of old text.
+v0.2 (2026-10-11): Detection rewritten — per-block diffing.
+v0.1 diffed the whole page's text; the page jitters (labels,
+timestamps), so the resync guard silently swallowed real replies
+while tiny chrome text (an "Ibid" label) leaked through and got
+spoken. Now museSpeak watches individual message-sized text
+blocks instead:
+- Innermost text blocks only (25–4000 chars); code elements
+are stripped from a block before it is read.
+- Header / nav / sidebar / composer areas are excluded, so
+page labels can never be spoken.
+- A block must exist after arming and sit unchanged ~1.5s
+before it is read; texts already accounted for are never
+re-read — growth speaks only the new tail.
+- Own-message filter now also captures the composer text on
+any button click (send-button sends), not just Enter.
+v0.1 (2026-10-10): First prototype — whole-page text diff,
+own-message filter via Enter capture, markdown cleanup,
+sentence-chunked speech queue, on-page toggle.
 
-Known limits (by design, fix in later versions):
-- Speaks a reply only after it finishes streaming + 1.2s of quiet.
-- If an unrelated label in the page text changes mid-reply (clocks,
-"2m ago" stamps), a reply can occasionally be skipped by the resync
-guard. v0.2: pin to real message elements once we see the live DOM.
+Known limits:
+- Speaks a reply only after it finishes streaming and settles.
+- A block that is edited in place (not appended to) after being
+read is not re-read.
 */
 
 (() => {
 'use strict';
 
-const VERSION = '0.1';
+const VERSION = '0.2';
 const CFG = {
-stabilizeMs: 1200, // quiet period after last page change before speaking
-armDelayMs: 2500, // wait after load before speaking anything (history settle)
-maxDeltaChars: 4000, // bigger jumps = view change, not speech
+armDelayMs: 2500, // wait after load before speaking anything
+scanDebounceMs: 700,
+settleMs: 1500, // block must be unchanged this long before speaking
+minAgeMs: 1200, // block must exist at least this long before speaking
+minChars: 25, // shorter blocks are labels, never speech
+maxChars: 4000,
 rate: 1.02,
 voiceNameHints: ['Google US English', 'Microsoft Aria', 'Samantha'],
 };
 
 let armed = false;
 let muted = false;
-let baseline = ''; // normalized region text already accounted for
 let timer = null;
 const ownMessages = []; // Kip's sent texts, filtered out of speech
+const seen = new Map(); // block key -> { text, firstSeen, lastChange, spoken}
+const spokenList = []; // full texts already accounted for (delta base)
 
 const normalize = s => (s || '').replace(/\s+/g, ' ').trim();
 
-// ---------- region text (chat area, minus composer and our own UI) ----------
-function regionText() {
-const el = document.querySelector('main') || document.body;
-if (!el) return '';
-const clone = el.cloneNode(true);
-clone.querySelectorAll(
-'textarea, [contenteditable="true"], [role="textbox"], script, style, noscript, #ibid-reader-ui'
-).forEach(n => n.remove());
-return normalize(clone.textContent || '');
+// ---------- block collection ----------
+const BLOCK_SEL = 'div, article, section, li, blockquote';
+const SKIP_CTX = 'header, nav, aside, [role="navigation"], [role="banner"], ' +
+'[role="complementary"], #musespeak-ui';
+const COMPOSER_CTX = 'textarea, [contenteditable="true"], [role="textbox"]';
+
+function blockText(el) {
+const c = el.cloneNode(true);
+c.querySelectorAll('pre, code, script, style').forEach(n => n.remove());
+return normalize(c.textContent || '');
+}
+
+function collectBlocks() {
+const scope = document.querySelector('main') || document.body;
+if (!scope) return [];
+const kept = [];
+const elSet = new Set();
+for (const el of scope.querySelectorAll(BLOCK_SEL)) {
+if (el.closest(SKIP_CTX) || el.closest(COMPOSER_CTX)) continue;
+const t = blockText(el);
+if (t.length < CFG.minChars || t.length > CFG.maxChars) continue;
+kept.push({ el, t});
+elSet.add(el);
+}
+// innermost only: drop any block that contains another kept block
+return kept.filter(b => {
+for (const d of b.el.querySelectorAll(BLOCK_SEL)) {
+if (elSet.has(d)) return false;
+}
+return true;
+});
 }
 
 // ---------- speech cleanup ----------
@@ -125,7 +152,7 @@ speechSynthesis.speak(u);
 function speak(text) {
 const chunks = splitSentences(text);
 if (!chunks.length) return;
-console.log('[Ibid Reader] speaking:', text.slice(0, 120) + (text.length > 120? '…': ''));
+console.log('[museSpeak] speaking:', text.slice(0, 120) + (text.length > 120? '…': ''));
 chunks.forEach(c => queue.push(c));
 pump();
 }
@@ -136,38 +163,14 @@ speaking = false;
 try { speechSynthesis.cancel();} catch (e) {}
 }
 
-// ---------- detection ----------
-function commonPrefixLen(a, b) {
-const n = Math.min(a.length, b.length);
-let i = 0;
-while (i < n && a[i] === b[i]) i++;
-return i;
+// ---------- own-message filter ----------
+function isOwn(t) {
+return ownMessages.some(o => o && (t === o || t.includes(o)));
 }
 
-function checkAndSpeak() {
-const now = regionText();
-if (!now || now === baseline) { baseline = now; return;}
-const p = commonPrefixLen(baseline, now);
-let delta = now.slice(p);
-// Big divergence = chat switch / re-render: re-baseline silently.
-if (!armed || p < baseline.length * 0.5 || delta.length > CFG.maxDeltaChars) {
-baseline = now;
-return;
-}
-for (const own of ownMessages) {
-if (own && delta.includes(own)) delta = delta.split(own).join(' ');
-}
-baseline = now;
-const clean = cleanForSpeech(delta);
-if (clean.length >= 2) speak(clean);
-}
-
-// Capture Kip's own message text when he sends with Enter.
-document.addEventListener('keydown', (e) => {
-if (e.key!== 'Enter' || e.shiftKey) return;
+function captureComposer() {
 let best = '';
-document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]')
-.forEach(c => {
+document.querySelectorAll(COMPOSER_CTX).forEach(c => {
 const t = normalize(c.value!== undefined? c.value: (c.innerText || c.textContent));
 if (t.length > best.length) best = t;
 });
@@ -175,22 +178,70 @@ if (best) {
 ownMessages.push(best);
 if (ownMessages.length > 30) ownMessages.shift();
 }
+}
+
+document.addEventListener('keydown', (e) => {
+if (e.key === 'Enter' &&!e.shiftKey) captureComposer();
 }, true);
+document.addEventListener('click', (e) => {
+if (e.target.closest && e.target.closest('button')) captureComposer();
+}, true);
+
+// ---------- detection ----------
+function speakDelta(t) {
+// Never re-read: if this text extends something already accounted
+// for, speak only the new tail.
+let base = '';
+for (const s of spokenList) {
+if (s && t.startsWith(s) && s.length > base.length) base = s;
+}
+const delta = t.slice(base.length).trim();
+spokenList.push(t);
+if (spokenList.length > 100) spokenList.shift();
+if (delta.length < 2 || isOwn(t) || isOwn(delta)) return;
+const clean = cleanForSpeech(delta);
+if (clean.length >= 2) speak(clean);
+}
+
+function scan() {
+const now = Date.now();
+for (const { t} of collectBlocks()) {
+const key = t.slice(0, 80);
+let e = seen.get(key);
+if (!e) {
+e = { text: t, firstSeen: now, lastChange: now, spoken:!armed};
+if (!armed) { spokenList.push(t);}
+seen.set(key, e);
+continue;
+}
+if (e.text!== t) { e.text = t; e.lastChange = now;}
+if (armed &&!e.spoken &&
+now - e.firstSeen >= CFG.minAgeMs &&
+now - e.lastChange >= CFG.settleMs) {
+e.spoken = true;
+speakDelta(t);
+}
+}
+if (seen.size > 500) { // keep the map from growing forever
+const drop = [...seen.keys()].slice(0, seen.size - 400);
+drop.forEach(k => seen.delete(k));
+}
+}
 
 // ---------- on-page toggle ----------
 const ui = document.createElement('div');
-ui.id = 'ibid-reader-ui';
+ui.id = 'musespeak-ui';
 ui.style.cssText =
 'position:fixed;right:16px;bottom:16px;z-index:2147483647;font-family:system-ui,sans-serif;';
 const btn = document.createElement('button');
-btn.textContent = '🔊 Ibid Reader: ON';
+btn.textContent = '🔊 museSpeak: ON';
 btn.style.cssText =
 'background:#123332;color:#e8f0ee;border:1px solid #2f6f6a;border-radius:20px;' +
 'padding:8px 16px;font-size:13px;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.35);';
 btn.addEventListener('click', () => {
 muted =!muted;
 if (muted) stopAll();
-btn.textContent = muted? '🔇 Ibid Reader: OFF': '🔊 Ibid Reader: ON';
+btn.textContent = muted? '🔇 museSpeak: OFF': '🔊 museSpeak: ON';
 if (!muted) pump();
 });
 ui.appendChild(btn);
@@ -199,16 +250,16 @@ ui.appendChild(btn);
 // ---------- go ----------
 const obs = new MutationObserver(() => {
 clearTimeout(timer);
-timer = setTimeout(checkAndSpeak, CFG.stabilizeMs);
+timer = setTimeout(scan, CFG.scanDebounceMs);
 });
 
 function start() {
-baseline = regionText();
+scan(); // baseline: everything on the page now counts as already-seen
 obs.observe(document.body, { childList: true, subtree: true, characterData: true});
 setTimeout(() => {
-baseline = regionText(); // re-baseline after history finishes rendering
+scan(); // re-baseline after late renders
 armed = true;
-console.log('[Ibid Reader v' + VERSION + '] armed. New replies will be spoken.');
+console.log('[museSpeak v' + VERSION + '] armed. New replies will be spoken.');
 }, CFG.armDelayMs);
 }
 
